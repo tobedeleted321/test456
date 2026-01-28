@@ -37,7 +37,7 @@ jobs:
         env:
           GITHUB_OWNER: tobedeleted321
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+          echo "${{ secrets.TOKEN }}" | gh auth login --with-token
       
       - name: Validate inputs
         env:
