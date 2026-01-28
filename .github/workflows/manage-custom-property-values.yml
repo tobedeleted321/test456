@@ -215,9 +215,18 @@ jobs:
           NEW_VALUES=$(cat /tmp/new_values.txt | jq -R -s -c 'split("\n") | map(select(length > 0))')
           
           # Build updated property JSON
-          UPDATED_CONFIG=$(echo "$PROPERTY_CONFIG" | jq --argjson new_values "$NEW_VALUES" '.allowed_values = $new_values')
+          UPDATED_CONFIG=$(echo "$PROPERTY_CONFIG" | jq --argjson new_values "$NEW_VALUES" '{
+            value_type: .value_type,
+            required: .required,
+            default_value: .default_value,
+            description: .description,
+            allowed_values: $new_values,
+            values_editable_by: .values_editable_by
+          }')
           
           echo "Updating property '$PROPERTY_NAME'..."
+          echo "Payload:"
+          echo "$UPDATED_CONFIG" | jq '.'
           
           # Apply the update
           echo "$UPDATED_CONFIG" | gh api -X PUT /orgs/$ORG_NAME/properties/schema/$PROPERTY_NAME --input -
