@@ -1,36 +1,302 @@
-# This is a basic workflow to help you get started with Actions
+name: Manage Custom Property Values
 
-name: CI
-
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the "main" branch
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
-
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
+    inputs:
+      property_name:
+        description: 'Custom property name (e.g., project, team)'
+        required: true
+        type: string
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options:
+          - add
+          - delete
+      value:
+        description: 'Value to add or delete (e.g., SRE, new-project)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Dry run (show what would change without applying)'
+        required: false
+        default: true
+        type: boolean
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # This workflow contains a single job called "build"
-  build:
-    # The type of runner that the job will run on
+  manage-property-values:
     runs-on: ubuntu-latest
-
-    # Steps represent a sequence of tasks that will be executed as part of the job
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v4
-
-      # Runs a single command using the runners shell
-      - name: Run a one-line script
-        run: echo Hello, world!
-
-      # Runs a set of commands using the runners shell
-      - name: Run a multi-line script
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup GitHub CLI
+        env:
+          GITHUB_OWNER: tobedeleted321
         run: |
-          echo Add other actions to build,
-          echo test, and deploy your project.
+          echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+      
+      - name: Validate inputs
+        env:
+          PROPERTY_NAME: ${{ github.event.inputs.property_name }}
+          ACTION: ${{ github.event.inputs.action }}
+          VALUE: ${{ github.event.inputs.value }}
+          ORG_NAME: tobedeleted321
+        run: |
+          echo "::group::Input Validation"
+          echo "Organization: $ORG_NAME"
+          echo "Property Name: $PROPERTY_NAME"
+          echo "Action: $ACTION"
+          echo "Value: $VALUE"
+          echo "Dry Run: ${{ github.event.inputs.dry_run }}"
+          
+          # Validate property exists
+          if ! gh api -H "Accept: application/vnd.github+json" \
+               /orgs/$ORG_NAME/properties/schema/$PROPERTY_NAME &>/dev/null; then
+            echo "::error::Property '$PROPERTY_NAME' does not exist"
+            echo "Available properties:"
+            gh api /orgs/$ORG_NAME/properties/schema | jq -r '.[].property_name'
+            exit 1
+          fi
+          
+          # Check if property is single_select or multi_select
+          PROPERTY_TYPE=$(gh api /orgs/$ORG_NAME/properties/schema/$PROPERTY_NAME | jq -r '.value_type')
+          
+          if [[ "$PROPERTY_TYPE" != "single_select" && "$PROPERTY_TYPE" != "multi_select" ]]; then
+            echo "::error::Property '$PROPERTY_NAME' is type '$PROPERTY_TYPE'. This workflow only works with single_select or multi_select types."
+            exit 1
+          fi
+          
+          echo "::notice::Property '$PROPERTY_NAME' is type '$PROPERTY_TYPE' - compatible!"
+          echo "::endgroup::"
+      
+      - name: Get current property configuration
+        id: current_config
+        env:
+          PROPERTY_NAME: ${{ github.event.inputs.property_name }}
+          ORG_NAME: tobedeleted321
+        run: |
+          echo "::group::Current Configuration"
+          
+          # Get current property details
+          PROPERTY_JSON=$(gh api /orgs/$ORG_NAME/properties/schema/$PROPERTY_NAME)
+          
+          echo "Current configuration:"
+          echo "$PROPERTY_JSON" | jq '.'
+          
+          # Extract current allowed values
+          CURRENT_VALUES=$(echo "$PROPERTY_JSON" | jq -r '.allowed_values[]' | sort)
+          
+          echo ""
+          echo "Current allowed values:"
+          echo "$CURRENT_VALUES"
+          
+          # Save to file for next step
+          echo "$PROPERTY_JSON" > /tmp/property_config.json
+          echo "$CURRENT_VALUES" > /tmp/current_values.txt
+          
+          echo "::endgroup::"
+      
+      - name: Calculate new values
+        id: new_values
+        env:
+          ACTION: ${{ github.event.inputs.action }}
+          VALUE: ${{ github.event.inputs.value }}
+          PROPERTY_NAME: ${{ github.event.inputs.property_name }}
+          ORG_NAME: tobedeleted321
+        run: |
+          echo "::group::Calculating New Values"
+          
+          # Read current values
+          CURRENT_VALUES=$(cat /tmp/current_values.txt)
+          
+          if [[ "$ACTION" == "add" ]]; then
+            # Check if value already exists
+            if echo "$CURRENT_VALUES" | grep -q "^${VALUE}$"; then
+              echo "::warning::Value '$VALUE' already exists in allowed values"
+              echo "No changes needed."
+              echo "changed=false" >> $GITHUB_OUTPUT
+            else
+              echo "::notice::Adding '$VALUE' to allowed values"
+              NEW_VALUES=$(echo -e "${CURRENT_VALUES}\n${VALUE}" | sort)
+              echo "$NEW_VALUES" > /tmp/new_values.txt
+              echo "changed=true" >> $GITHUB_OUTPUT
+            fi
+          elif [[ "$ACTION" == "delete" ]]; then
+            # Check if value exists
+            if ! echo "$CURRENT_VALUES" | grep -q "^${VALUE}$"; then
+              echo "::warning::Value '$VALUE' does not exist in allowed values"
+              echo "No changes needed."
+              echo "changed=false" >> $GITHUB_OUTPUT
+            else
+              echo "::notice::Removing '$VALUE' from allowed values"
+              NEW_VALUES=$(echo "$CURRENT_VALUES" | grep -v "^${VALUE}$")
+              
+              # Check if we're removing the last value
+              if [[ -z "$NEW_VALUES" ]]; then
+                echo "::error::Cannot remove last allowed value. At least one value must remain."
+                exit 1
+              fi
+              
+              echo "$NEW_VALUES" > /tmp/new_values.txt
+              echo "changed=true" >> $GITHUB_OUTPUT
+              
+              # Check if any repos are using this value
+              echo ""
+              echo "::warning::Checking if any repositories are using this value..."
+              REPOS_USING_VALUE=$(gh api /orgs/$ORG_NAME/properties/values | \
+                jq -r --arg prop "$PROPERTY_NAME" --arg val "$VALUE" \
+                '.[] | select(.properties[] | select(.property_name == $prop and .value == $val)) | .repository_name')
+              
+              if [[ -n "$REPOS_USING_VALUE" ]]; then
+                REPO_COUNT=$(echo "$REPOS_USING_VALUE" | wc -l | tr -d ' ')
+                echo "::warning::⚠️  $REPO_COUNT repositories are currently using value '$VALUE':"
+                echo "$REPOS_USING_VALUE" | head -10 | sed 's/^/  - /'
+                if [[ $REPO_COUNT -gt 10 ]]; then
+                  echo "  ... and $((REPO_COUNT - 10)) more"
+                fi
+                echo ""
+                echo "::warning::These repositories will need to be updated to a different value before deletion!"
+              else
+                echo "::notice::✓ No repositories are using value '$VALUE' - safe to delete"
+              fi
+            fi
+          fi
+          
+          echo "::endgroup::"
+      
+      - name: Show changes
+        if: steps.new_values.outputs.changed == 'true'
+        env:
+          ACTION: ${{ github.event.inputs.action }}
+          VALUE: ${{ github.event.inputs.value }}
+          PROPERTY_NAME: ${{ github.event.inputs.property_name }}
+        run: |
+          echo "::group::Proposed Changes"
+          
+          echo "Property: $PROPERTY_NAME"
+          echo "Action: $ACTION"
+          echo "Value: $VALUE"
+          echo ""
+          
+          echo "Current allowed values:"
+          cat /tmp/current_values.txt | sed 's/^/  - /'
+          
+          echo ""
+          echo "New allowed values:"
+          cat /tmp/new_values.txt | sed 's/^/  - /'
+          
+          echo ""
+          if [[ "$ACTION" == "add" ]]; then
+            echo "::notice::✓ Will ADD '$VALUE' to property '$PROPERTY_NAME'"
+          else
+            echo "::notice::✓ Will DELETE '$VALUE' from property '$PROPERTY_NAME'"
+          fi
+          
+          echo "::endgroup::"
+      
+      - name: Apply changes
+        if: steps.new_values.outputs.changed == 'true' && github.event.inputs.dry_run == 'false'
+        env:
+          PROPERTY_NAME: ${{ github.event.inputs.property_name }}
+          ACTION: ${{ github.event.inputs.action }}
+          VALUE: ${{ github.event.inputs.value }}
+          ORG_NAME: tobedeleted321
+        run: |
+          echo "::group::Applying Changes"
+          
+          # Read current property config
+          PROPERTY_CONFIG=$(cat /tmp/property_config.json)
+          
+          # Read new values
+          NEW_VALUES=$(cat /tmp/new_values.txt | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          
+          # Build updated property JSON
+          UPDATED_CONFIG=$(echo "$PROPERTY_CONFIG" | jq --argjson new_values "$NEW_VALUES" '.allowed_values = $new_values')
+          
+          echo "Updating property '$PROPERTY_NAME'..."
+          
+          # Apply the update
+          echo "$UPDATED_CONFIG" | gh api -X PUT /orgs/$ORG_NAME/properties/schema/$PROPERTY_NAME --input -
+          
+          if [[ $? -eq 0 ]]; then
+            echo "::notice::✓ Successfully updated property '$PROPERTY_NAME'"
+            
+            # Verify the change
+            echo ""
+            echo "Verification - Current allowed values:"
+            gh api /orgs/$ORG_NAME/properties/schema/$PROPERTY_NAME | jq -r '.allowed_values[]' | sed 's/^/  - /'
+          else
+            echo "::error::Failed to update property"
+            exit 1
+          fi
+          
+          echo "::endgroup::"
+      
+      - name: Dry run summary
+        if: github.event.inputs.dry_run == 'true'
+        run: |
+          echo "::notice::🔍 DRY RUN MODE - No changes were applied"
+          echo "::notice::To apply these changes, run the workflow again with 'dry_run: false'"
+      
+      - name: Create summary
+        if: always()
+        env:
+          ACTION: ${{ github.event.inputs.action }}
+          VALUE: ${{ github.event.inputs.value }}
+          PROPERTY_NAME: ${{ github.event.inputs.property_name }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          CHANGED: ${{ steps.new_values.outputs.changed }}
+        run: |
+          echo "## Custom Property Management Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Property:** \`$PROPERTY_NAME\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Action:** $ACTION" >> $GITHUB_STEP_SUMMARY
+          echo "**Value:** \`$VALUE\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Dry Run:** $DRY_RUN" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "$CHANGED" == "true" ]]; then
+            if [[ "$DRY_RUN" == "true" ]]; then
+              echo "### 🔍 Dry Run - Changes Preview" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "The following changes would be applied:" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "### ✅ Changes Applied" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "The following changes were applied:" >> $GITHUB_STEP_SUMMARY
+            fi
+            
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Current values:**" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat /tmp/current_values.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**New values:**" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat /tmp/new_values.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ℹ️ No Changes" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            if [[ "$ACTION" == "add" ]]; then
+              echo "Value \`$VALUE\` already exists in property \`$PROPERTY_NAME\`" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "Value \`$VALUE\` does not exist in property \`$PROPERTY_NAME\`" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "**Executed by:** @${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Timestamp:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+      
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f /tmp/property_config.json /tmp/current_values.txt /tmp/new_values.txt || true
