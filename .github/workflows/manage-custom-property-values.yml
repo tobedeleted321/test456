@@ -319,7 +319,7 @@ jobs:
           
           if [[ "${{ github.event.inputs.dry_run }}" == "false" ]]; then
             echo "Creating property..."
-            echo "API Endpoint: POST /orgs/$ORG_NAME/properties/schema/$name"
+            echo "API Endpoint: POST /orgs/$ORG_NAME/properties/schema/$PROPERTY_NAME"
             echo ""
             
             # Capture both stdout and stderr
