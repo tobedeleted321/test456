@@ -14,10 +14,30 @@ on:
         options:
           - add
           - delete
+          - create_property
       value:
-        description: 'Value to add or delete (e.g., SRE, new-project)'
-        required: true
+        description: 'Value(s) to add/delete (single value or comma-separated: value1,value2,value3). For create_property, this becomes initial allowed_values.'
+        required: false
         type: string
+      property_type:
+        description: 'Property type (only for create_property action)'
+        required: false
+        type: choice
+        default: single_select
+        options:
+          - single_select
+          - multi_select
+          - string
+          - true_false
+      property_description:
+        description: 'Property description (only for create_property action)'
+        required: false
+        type: string
+      property_required:
+        description: 'Is property required? (only for create_property action)'
+        required: false
+        type: boolean
+        default: false
       dry_run:
         description: 'Dry run (show what would change without applying)'
         required: false
@@ -44,6 +64,9 @@ jobs:
           PROPERTY_NAME: ${{ github.event.inputs.property_name }}
           ACTION: ${{ github.event.inputs.action }}
           VALUE: ${{ github.event.inputs.value }}
+          PROPERTY_TYPE: ${{ github.event.inputs.property_type }}
+          PROPERTY_DESCRIPTION: ${{ github.event.inputs.property_description }}
+          PROPERTY_REQUIRED: ${{ github.event.inputs.property_required }}
           ORG_NAME: tobedeleted321
         run: |
           echo "::group::Input Validation"
@@ -53,27 +76,149 @@ jobs:
           echo "Value: $VALUE"
           echo "Dry Run: ${{ github.event.inputs.dry_run }}"
           
-          # Validate property exists
-          if ! gh api -H "Accept: application/vnd.github+json" \
-               /orgs/$ORG_NAME/properties/schema/$PROPERTY_NAME &>/dev/null; then
-            echo "::error::Property '$PROPERTY_NAME' does not exist"
-            echo "Available properties:"
-            gh api /orgs/$ORG_NAME/properties/schema | jq -r '.[].property_name'
-            exit 1
+          if [[ "$ACTION" == "create_property" ]]; then
+            echo "Property Type: $PROPERTY_TYPE"
+            echo "Property Description: $PROPERTY_DESCRIPTION"
+            echo "Property Required: $PROPERTY_REQUIRED"
+            
+            # Check if property already exists
+            if gh api -H "Accept: application/vnd.github+json" \
+                 /orgs/$ORG_NAME/properties/schema/$PROPERTY_NAME &>/dev/null; then
+              echo "::error::Property '$PROPERTY_NAME' already exists. Use 'add' action to add values to it."
+              exit 1
+            fi
+            
+            # Validate required fields for create_property
+            if [[ -z "$PROPERTY_DESCRIPTION" ]]; then
+              echo "::error::Property description is required when creating a property"
+              exit 1
+            fi
+            
+            # For select types, validate that values are provided
+            if [[ "$PROPERTY_TYPE" == "single_select" || "$PROPERTY_TYPE" == "multi_select" ]]; then
+              if [[ -z "$VALUE" ]]; then
+                echo "::error::At least one value is required for $PROPERTY_TYPE properties"
+                exit 1
+              fi
+            fi
+            
+            echo "::notice::Ready to create new property '$PROPERTY_NAME'"
+          else
+            # For add/delete actions, validate property exists
+            if ! gh api -H "Accept: application/vnd.github+json" \
+                 /orgs/$ORG_NAME/properties/schema/$PROPERTY_NAME &>/dev/null; then
+              echo "::error::Property '$PROPERTY_NAME' does not exist"
+              echo "Available properties:"
+              gh api /orgs/$ORG_NAME/properties/schema | jq -r '.[].property_name'
+              echo ""
+              echo "To create this property, use action 'create_property'"
+              exit 1
+            fi
+            
+            # Check if property is single_select or multi_select
+            EXISTING_PROPERTY_TYPE=$(gh api /orgs/$ORG_NAME/properties/schema/$PROPERTY_NAME | jq -r '.value_type')
+            
+            if [[ "$EXISTING_PROPERTY_TYPE" != "single_select" && "$EXISTING_PROPERTY_TYPE" != "multi_select" ]]; then
+              echo "::error::Property '$PROPERTY_NAME' is type '$EXISTING_PROPERTY_TYPE'. This workflow only works with single_select or multi_select types for add/delete actions."
+              exit 1
+            fi
+            
+            # Validate value is provided for add/delete
+            if [[ -z "$VALUE" ]]; then
+              echo "::error::Value is required for $ACTION action"
+              exit 1
+            fi
+            
+            echo "::notice::Property '$PROPERTY_NAME' is type '$EXISTING_PROPERTY_TYPE' - compatible!"
           fi
           
-          # Check if property is single_select or multi_select
-          PROPERTY_TYPE=$(gh api /orgs/$ORG_NAME/properties/schema/$PROPERTY_NAME | jq -r '.value_type')
+          echo "::endgroup::"
+      
+      - name: Create property
+        if: github.event.inputs.action == 'create_property'
+        env:
+          PROPERTY_NAME: ${{ github.event.inputs.property_name }}
+          PROPERTY_TYPE: ${{ github.event.inputs.property_type }}
+          PROPERTY_DESCRIPTION: ${{ github.event.inputs.property_description }}
+          PROPERTY_REQUIRED: ${{ github.event.inputs.property_required }}
+          VALUE: ${{ github.event.inputs.value }}
+          ORG_NAME: tobedeleted321
+        run: |
+          echo "::group::Create Property"
           
-          if [[ "$PROPERTY_TYPE" != "single_select" && "$PROPERTY_TYPE" != "multi_select" ]]; then
-            echo "::error::Property '$PROPERTY_NAME' is type '$PROPERTY_TYPE'. This workflow only works with single_select or multi_select types."
-            exit 1
+          # Parse comma-separated values into JSON array
+          if [[ -n "$VALUE" ]]; then
+            # Split by comma, trim whitespace, and create JSON array
+            ALLOWED_VALUES=$(echo "$VALUE" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          else
+            ALLOWED_VALUES="[]"
           fi
           
-          echo "::notice::Property '$PROPERTY_NAME' is type '$PROPERTY_TYPE' - compatible!"
+          echo "Property Name: $PROPERTY_NAME"
+          echo "Property Type: $PROPERTY_TYPE"
+          echo "Property Description: $PROPERTY_DESCRIPTION"
+          echo "Property Required: $PROPERTY_REQUIRED"
+          echo "Allowed Values: $ALLOWED_VALUES"
+          echo ""
+          
+          # Build property JSON based on type
+          if [[ "$PROPERTY_TYPE" == "single_select" || "$PROPERTY_TYPE" == "multi_select" ]]; then
+            # Get first value as default
+            DEFAULT_VALUE=$(echo "$ALLOWED_VALUES" | jq -r '.[0]')
+            
+            PROPERTY_JSON=$(jq -n \
+              --arg name "$PROPERTY_NAME" \
+              --arg type "$PROPERTY_TYPE" \
+              --arg desc "$PROPERTY_DESCRIPTION" \
+              --argjson required "$PROPERTY_REQUIRED" \
+              --arg default "$DEFAULT_VALUE" \
+              --argjson values "$ALLOWED_VALUES" \
+              '{
+                property_name: $name,
+                value_type: $type,
+                description: $desc,
+                required: $required,
+                default_value: $default,
+                allowed_values: $values,
+                values_editable_by: "org_and_repo_actors"
+              }')
+          else
+            # For string, true_false types
+            PROPERTY_JSON=$(jq -n \
+              --arg name "$PROPERTY_NAME" \
+              --arg type "$PROPERTY_TYPE" \
+              --arg desc "$PROPERTY_DESCRIPTION" \
+              --argjson required "$PROPERTY_REQUIRED" \
+              '{
+                property_name: $name,
+                value_type: $type,
+                description: $desc,
+                required: $required
+              }')
+          fi
+          
+          echo "Property JSON:"
+          echo "$PROPERTY_JSON" | jq '.'
+          echo ""
+          
+          if [[ "${{ github.event.inputs.dry_run }}" == "false" ]]; then
+            echo "Creating property..."
+            echo "$PROPERTY_JSON" | gh api -X POST /orgs/$ORG_NAME/properties/schema --input -
+            
+            if [[ $? -eq 0 ]]; then
+              echo "::notice::✓ Successfully created property '$PROPERTY_NAME'"
+            else
+              echo "::error::Failed to create property"
+              exit 1
+            fi
+          else
+            echo "::notice::🔍 DRY RUN - Property would be created with above configuration"
+          fi
+          
           echo "::endgroup::"
       
       - name: Get current property configuration
+        if: github.event.inputs.action != 'create_property'
         id: current_config
         env:
           PROPERTY_NAME: ${{ github.event.inputs.property_name }}
@@ -101,6 +246,7 @@ jobs:
           echo "::endgroup::"
       
       - name: Calculate new values
+        if: github.event.inputs.action != 'create_property'
         id: new_values
         env:
           ACTION: ${{ github.event.inputs.action }}
@@ -113,63 +259,123 @@ jobs:
           # Read current values
           CURRENT_VALUES=$(cat /tmp/current_values.txt)
           
+          # Parse comma-separated values
+          IFS=',' read -ra VALUES_ARRAY <<< "$VALUE"
+          
           if [[ "$ACTION" == "add" ]]; then
-            # Check if value already exists
-            if echo "$CURRENT_VALUES" | grep -q "^${VALUE}$"; then
-              echo "::warning::Value '$VALUE' already exists in allowed values"
-              echo "No changes needed."
-              echo "changed=false" >> $GITHUB_OUTPUT
-            else
-              echo "::notice::Adding '$VALUE' to allowed values"
-              NEW_VALUES=$(echo -e "${CURRENT_VALUES}\n${VALUE}" | sort)
-              echo "$NEW_VALUES" > /tmp/new_values.txt
-              echo "changed=true" >> $GITHUB_OUTPUT
-            fi
-          elif [[ "$ACTION" == "delete" ]]; then
-            # Check if value exists
-            if ! echo "$CURRENT_VALUES" | grep -q "^${VALUE}$"; then
-              echo "::warning::Value '$VALUE' does not exist in allowed values"
-              echo "No changes needed."
-              echo "changed=false" >> $GITHUB_OUTPUT
-            else
-              echo "::notice::Removing '$VALUE' from allowed values"
-              NEW_VALUES=$(echo "$CURRENT_VALUES" | grep -v "^${VALUE}$")
+            NEW_VALUES="$CURRENT_VALUES"
+            ADDED_COUNT=0
+            SKIPPED_COUNT=0
+            ADDED_VALUES=""
+            SKIPPED_VALUES=""
+            
+            for val in "${VALUES_ARRAY[@]}"; do
+              # Trim whitespace
+              val=$(echo "$val" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
               
-              # Check if we're removing the last value
-              if [[ -z "$NEW_VALUES" ]]; then
-                echo "::error::Cannot remove last allowed value. At least one value must remain."
-                exit 1
-              fi
-              
-              echo "$NEW_VALUES" > /tmp/new_values.txt
-              echo "changed=true" >> $GITHUB_OUTPUT
-              
-              # Check if any repos are using this value
-              echo ""
-              echo "::warning::Checking if any repositories are using this value..."
-              REPOS_USING_VALUE=$(gh api /orgs/$ORG_NAME/properties/values | \
-                jq -r --arg prop "$PROPERTY_NAME" --arg val "$VALUE" \
-                '.[] | select(.properties[] | select(.property_name == $prop and .value == $val)) | .repository_name')
-              
-              if [[ -n "$REPOS_USING_VALUE" ]]; then
-                REPO_COUNT=$(echo "$REPOS_USING_VALUE" | wc -l | tr -d ' ')
-                echo "::warning::⚠️  $REPO_COUNT repositories are currently using value '$VALUE':"
-                echo "$REPOS_USING_VALUE" | head -10 | sed 's/^/  - /'
-                if [[ $REPO_COUNT -gt 10 ]]; then
-                  echo "  ... and $((REPO_COUNT - 10)) more"
-                fi
-                echo ""
-                echo "::warning::These repositories will need to be updated to a different value before deletion!"
+              # Check if value already exists
+              if echo "$CURRENT_VALUES" | grep -q "^${val}$"; then
+                echo "::warning::Value '$val' already exists - skipping"
+                SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+                SKIPPED_VALUES="${SKIPPED_VALUES}${val}, "
               else
-                echo "::notice::✓ No repositories are using value '$VALUE' - safe to delete"
+                echo "::notice::Adding '$val' to allowed values"
+                NEW_VALUES=$(echo -e "${NEW_VALUES}\n${val}")
+                ADDED_COUNT=$((ADDED_COUNT + 1))
+                ADDED_VALUES="${ADDED_VALUES}${val}, "
               fi
+            done
+            
+            # Remove trailing comma and space
+            ADDED_VALUES=${ADDED_VALUES%, }
+            SKIPPED_VALUES=${SKIPPED_VALUES%, }
+            
+            if [[ $ADDED_COUNT -gt 0 ]]; then
+              NEW_VALUES=$(echo "$NEW_VALUES" | sort)
+              echo "$NEW_VALUES" > /tmp/new_values.txt
+              echo "changed=true" >> $GITHUB_OUTPUT
+              echo "added_count=$ADDED_COUNT" >> $GITHUB_OUTPUT
+              echo "added_values=$ADDED_VALUES" >> $GITHUB_OUTPUT
+              echo ""
+              echo "✓ Will add $ADDED_COUNT value(s): $ADDED_VALUES"
+            else
+              echo "changed=false" >> $GITHUB_OUTPUT
+              echo "No new values to add."
+            fi
+            
+            if [[ $SKIPPED_COUNT -gt 0 ]]; then
+              echo "⚠ Skipped $SKIPPED_COUNT existing value(s): $SKIPPED_VALUES"
+            fi
+            
+          elif [[ "$ACTION" == "delete" ]]; then
+            NEW_VALUES="$CURRENT_VALUES"
+            DELETED_COUNT=0
+            NOTFOUND_COUNT=0
+            DELETED_VALUES=""
+            NOTFOUND_VALUES=""
+            
+            for val in "${VALUES_ARRAY[@]}"; do
+              # Trim whitespace
+              val=$(echo "$val" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+              
+              # Check if value exists
+              if ! echo "$NEW_VALUES" | grep -q "^${val}$"; then
+                echo "::warning::Value '$val' does not exist - skipping"
+                NOTFOUND_COUNT=$((NOTFOUND_COUNT + 1))
+                NOTFOUND_VALUES="${NOTFOUND_VALUES}${val}, "
+              else
+                echo "::notice::Removing '$val' from allowed values"
+                NEW_VALUES=$(echo "$NEW_VALUES" | grep -v "^${val}$")
+                DELETED_COUNT=$((DELETED_COUNT + 1))
+                DELETED_VALUES="${DELETED_VALUES}${val}, "
+                
+                # Check if any repos are using this value
+                REPOS_USING_VALUE=$(gh api /orgs/$ORG_NAME/properties/values | \
+                  jq -r --arg prop "$PROPERTY_NAME" --arg val "$val" \
+                  '.[] | select(.properties[] | select(.property_name == $prop and .value == $val)) | .repository_name')
+                
+                if [[ -n "$REPOS_USING_VALUE" ]]; then
+                  REPO_COUNT=$(echo "$REPOS_USING_VALUE" | wc -l | tr -d ' ')
+                  echo "::warning::⚠️  $REPO_COUNT repositories are using value '$val':"
+                  echo "$REPOS_USING_VALUE" | head -5 | sed 's/^/  - /'
+                  if [[ $REPO_COUNT -gt 5 ]]; then
+                    echo "  ... and $((REPO_COUNT - 5)) more"
+                  fi
+                fi
+              fi
+            done
+            
+            # Remove trailing comma and space
+            DELETED_VALUES=${DELETED_VALUES%, }
+            NOTFOUND_VALUES=${NOTFOUND_VALUES%, }
+            
+            # Check if we're removing all values
+            if [[ -z "$NEW_VALUES" ]]; then
+              echo "::error::Cannot remove all allowed values. At least one value must remain."
+              exit 1
+            fi
+            
+            if [[ $DELETED_COUNT -gt 0 ]]; then
+              echo "$NEW_VALUES" > /tmp/new_values.txt
+              echo "changed=true" >> $GITHUB_OUTPUT
+              echo "deleted_count=$DELETED_COUNT" >> $GITHUB_OUTPUT
+              echo "deleted_values=$DELETED_VALUES" >> $GITHUB_OUTPUT
+              echo ""
+              echo "✓ Will delete $DELETED_COUNT value(s): $DELETED_VALUES"
+            else
+              echo "changed=false" >> $GITHUB_OUTPUT
+              echo "No values to delete."
+            fi
+            
+            if [[ $NOTFOUND_COUNT -gt 0 ]]; then
+              echo "⚠ Skipped $NOTFOUND_COUNT non-existent value(s): $NOTFOUND_VALUES"
             fi
           fi
           
           echo "::endgroup::"
       
       - name: Show changes
-        if: steps.new_values.outputs.changed == 'true'
+        if: steps.new_values.outputs.changed == 'true' && github.event.inputs.action != 'create_property'
         env:
           ACTION: ${{ github.event.inputs.action }}
           VALUE: ${{ github.event.inputs.value }}
@@ -179,7 +385,6 @@ jobs:
           
           echo "Property: $PROPERTY_NAME"
           echo "Action: $ACTION"
-          echo "Value: $VALUE"
           echo ""
           
           echo "Current allowed values:"
@@ -191,15 +396,15 @@ jobs:
           
           echo ""
           if [[ "$ACTION" == "add" ]]; then
-            echo "::notice::✓ Will ADD '$VALUE' to property '$PROPERTY_NAME'"
+            echo "::notice::✓ Will ADD values to property '$PROPERTY_NAME'"
           else
-            echo "::notice::✓ Will DELETE '$VALUE' from property '$PROPERTY_NAME'"
+            echo "::notice::✓ Will DELETE values from property '$PROPERTY_NAME'"
           fi
           
           echo "::endgroup::"
       
       - name: Apply changes
-        if: steps.new_values.outputs.changed == 'true' && github.event.inputs.dry_run == 'false'
+        if: steps.new_values.outputs.changed == 'true' && github.event.inputs.dry_run == 'false' && github.event.inputs.action != 'create_property'
         env:
           PROPERTY_NAME: ${{ github.event.inputs.property_name }}
           ACTION: ${{ github.event.inputs.action }}
@@ -257,6 +462,8 @@ jobs:
           ACTION: ${{ github.event.inputs.action }}
           VALUE: ${{ github.event.inputs.value }}
           PROPERTY_NAME: ${{ github.event.inputs.property_name }}
+          PROPERTY_TYPE: ${{ github.event.inputs.property_type }}
+          PROPERTY_DESCRIPTION: ${{ github.event.inputs.property_description }}
           DRY_RUN: ${{ github.event.inputs.dry_run }}
           CHANGED: ${{ steps.new_values.outputs.changed }}
         run: |
@@ -264,11 +471,29 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Property:** \`$PROPERTY_NAME\`" >> $GITHUB_STEP_SUMMARY
           echo "**Action:** $ACTION" >> $GITHUB_STEP_SUMMARY
-          echo "**Value:** \`$VALUE\`" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "$ACTION" == "create_property" ]]; then
+            echo "**Property Type:** $PROPERTY_TYPE" >> $GITHUB_STEP_SUMMARY
+            echo "**Description:** $PROPERTY_DESCRIPTION" >> $GITHUB_STEP_SUMMARY
+            echo "**Initial Values:** \`$VALUE\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Value(s):** \`$VALUE\`" >> $GITHUB_STEP_SUMMARY
+          fi
+          
           echo "**Dry Run:** $DRY_RUN" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          if [[ "$CHANGED" == "true" ]]; then
+          if [[ "$ACTION" == "create_property" ]]; then
+            if [[ "$DRY_RUN" == "true" ]]; then
+              echo "### 🔍 Dry Run - Property Creation Preview" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "Property \`$PROPERTY_NAME\` would be created with type \`$PROPERTY_TYPE\`" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "### ✅ Property Created" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "Property \`$PROPERTY_NAME\` has been created successfully!" >> $GITHUB_STEP_SUMMARY
+            fi
+          elif [[ "$CHANGED" == "true" ]]; then
             if [[ "$DRY_RUN" == "true" ]]; then
               echo "### 🔍 Dry Run - Changes Preview" >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
@@ -294,9 +519,9 @@ jobs:
             echo "### ℹ️ No Changes" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             if [[ "$ACTION" == "add" ]]; then
-              echo "Value \`$VALUE\` already exists in property \`$PROPERTY_NAME\`" >> $GITHUB_STEP_SUMMARY
-            else
-              echo "Value \`$VALUE\` does not exist in property \`$PROPERTY_NAME\`" >> $GITHUB_STEP_SUMMARY
+              echo "All provided values already exist in property \`$PROPERTY_NAME\`" >> $GITHUB_STEP_SUMMARY
+            elif [[ "$ACTION" == "delete" ]]; then
+              echo "None of the provided values exist in property \`$PROPERTY_NAME\`" >> $GITHUB_STEP_SUMMARY
             fi
           fi
           
