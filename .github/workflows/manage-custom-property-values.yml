@@ -134,6 +134,36 @@ jobs:
           
           echo "::endgroup::"
       
+      - name: Check custom properties support
+        if: github.event.inputs.action == 'create_property'
+        env:
+          ORG_NAME: tobedeleted321
+        run: |
+          echo "::group::Checking Custom Properties Support"
+          
+          echo "Checking if organization supports custom properties..."
+          
+          # Try to list existing properties to check if API is available
+          if gh api /orgs/$ORG_NAME/properties/schema &>/dev/null; then
+            echo "::notice::✓ Custom properties API is available"
+          else
+            echo "::error::Custom properties API is not available for this organization"
+            echo ""
+            echo "Possible reasons:"
+            echo "1. Custom properties are only available for GitHub Enterprise Cloud or Enterprise Server"
+            echo "2. Your organization might not have this feature enabled"
+            echo "3. The token might lack required permissions (admin:org)"
+            echo ""
+            echo "To check your organization's features:"
+            echo "  gh api /orgs/$ORG_NAME | jq '.plan'"
+            echo ""
+            echo "GitHub.com Free/Team/Pro plans do not support custom properties."
+            echo "You need GitHub Enterprise Cloud or Enterprise Server."
+            exit 1
+          fi
+          
+          echo "::endgroup::"
+      
       - name: Create property
         if: github.event.inputs.action == 'create_property'
         env:
@@ -203,12 +233,36 @@ jobs:
           
           if [[ "${{ github.event.inputs.dry_run }}" == "false" ]]; then
             echo "Creating property..."
-            echo "$PROPERTY_JSON" | gh api -X POST /orgs/$ORG_NAME/properties/schema --input -
             
-            if [[ $? -eq 0 ]]; then
+            # Capture both stdout and stderr
+            RESPONSE=$(echo "$PROPERTY_JSON" | gh api -X POST /orgs/$ORG_NAME/properties/schema --input - 2>&1)
+            EXIT_CODE=$?
+            
+            if [[ $EXIT_CODE -eq 0 ]]; then
               echo "::notice::✓ Successfully created property '$PROPERTY_NAME'"
+              echo ""
+              echo "Created property:"
+              echo "$RESPONSE" | jq '.'
             else
               echo "::error::Failed to create property"
+              echo ""
+              echo "Error response:"
+              echo "$RESPONSE"
+              echo ""
+              
+              # Check for specific errors
+              if echo "$RESPONSE" | grep -q "404"; then
+                echo "::error::HTTP 404 - Custom properties API not found"
+                echo "This organization does not have access to custom properties."
+                echo "Custom properties require GitHub Enterprise Cloud or Enterprise Server."
+              elif echo "$RESPONSE" | grep -q "403"; then
+                echo "::error::HTTP 403 - Permission denied"
+                echo "The token lacks required permissions. Need: admin:org scope"
+              elif echo "$RESPONSE" | grep -q "422"; then
+                echo "::error::HTTP 422 - Validation error"
+                echo "Check the property configuration for invalid values"
+              fi
+              
               exit 1
             fi
           else
