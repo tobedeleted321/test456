@@ -287,14 +287,12 @@ jobs:
               --arg type "$PROPERTY_TYPE" \
               --arg desc "$PROPERTY_DESCRIPTION" \
               --argjson required "$PROPERTY_REQUIRED" \
-              --arg default "$DEFAULT_VALUE" \
               --argjson values "$ALLOWED_VALUES" \
               '{
                 property_name: $name,
                 value_type: $type,
                 description: $desc,
                 required: $required,
-                default_value: $default,
                 allowed_values: $values,
                 values_editable_by: "org_and_repo_actors"
               }')
@@ -621,7 +619,6 @@ jobs:
           UPDATED_CONFIG=$(echo "$PROPERTY_CONFIG" | jq --argjson new_values "$NEW_VALUES" '{
             value_type: .value_type,
             required: .required,
-            default_value: .default_value,
             description: .description,
             allowed_values: $new_values,
             values_editable_by: .values_editable_by
