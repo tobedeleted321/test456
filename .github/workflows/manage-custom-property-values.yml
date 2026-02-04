@@ -323,7 +323,7 @@ jobs:
             echo ""
             
             # Capture both stdout and stderr
-            RESPONSE=$(echo "$PROPERTY_JSON" | gh api -X PUT /orgs/$ORG_NAME/properties/schema/$name --input - 2>&1)
+            RESPONSE=$(echo "$PROPERTY_JSON" | gh api -X PUT /orgs/$ORG_NAME/properties/schema/$PROPERTY_NAME --input - 2>&1)
             EXIT_CODE=$?
             
             if [[ $EXIT_CODE -eq 0 ]]; then
