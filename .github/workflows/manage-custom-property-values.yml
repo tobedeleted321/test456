@@ -134,31 +134,117 @@ jobs:
           
           echo "::endgroup::"
       
+      - name: Check organization plan
+        if: github.event.inputs.action == 'create_property'
+        env:
+          ORG_NAME: tobedeleted321
+        run: |
+          echo "::group::Checking Organization Plan"
+          
+          echo "Fetching organization information..."
+          ORG_INFO=$(gh api /orgs/$ORG_NAME 2>&1)
+          
+          if [[ $? -eq 0 ]]; then
+            PLAN_NAME=$(echo "$ORG_INFO" | jq -r '.plan.name // "unknown"')
+            echo "Organization: $ORG_NAME"
+            echo "Plan: $PLAN_NAME"
+            echo ""
+            
+            case "$PLAN_NAME" in
+              "free"|"team"|"pro")
+                echo "::warning::⚠️  Your organization is on the '$PLAN_NAME' plan"
+                echo "::warning::Custom properties are NOT available on this plan"
+                echo ""
+                echo "Custom properties require:"
+                echo "  ✅ GitHub Enterprise Cloud"
+                echo "  ✅ GitHub Enterprise Server 3.14+"
+                echo ""
+                echo "Your plan: ❌ GitHub $PLAN_NAME"
+                echo ""
+                echo "The workflow will likely fail when trying to create the property."
+                ;;
+              "enterprise")
+                echo "::notice::✅ Organization is on Enterprise plan - custom properties should be available"
+                ;;
+              *)
+                echo "::warning::⚠️  Could not determine plan type: $PLAN_NAME"
+                ;;
+            esac
+          else
+            echo "::warning::Could not fetch organization information"
+            echo "Response: $ORG_INFO"
+          fi
+          
+          echo "::endgroup::"
+      
       - name: Check custom properties support
         if: github.event.inputs.action == 'create_property'
         env:
           ORG_NAME: tobedeleted321
         run: |
-          echo "::group::Checking Custom Properties Support"
+          echo "::group::Checking Custom Properties API"
           
-          echo "Checking if organization supports custom properties..."
+          echo "Testing custom properties API endpoint..."
+          echo "Endpoint: GET /orgs/$ORG_NAME/properties/schema"
+          echo ""
           
           # Try to list existing properties to check if API is available
-          if gh api /orgs/$ORG_NAME/properties/schema &>/dev/null; then
-            echo "::notice::✓ Custom properties API is available"
+          API_RESPONSE=$(gh api /orgs/$ORG_NAME/properties/schema 2>&1)
+          EXIT_CODE=$?
+          
+          if [[ $EXIT_CODE -eq 0 ]]; then
+            echo "::notice::✅ Custom properties API is available!"
+            echo ""
+            PROP_COUNT=$(echo "$API_RESPONSE" | jq '. | length')
+            echo "Existing properties: $PROP_COUNT"
+            
+            if [[ $PROP_COUNT -gt 0 ]]; then
+              echo ""
+              echo "Properties found:"
+              echo "$API_RESPONSE" | jq -r '.[].property_name' | sed 's/^/  - /'
+            fi
           else
-            echo "::error::Custom properties API is not available for this organization"
+            echo "::error::❌ Custom properties API is NOT available"
             echo ""
-            echo "Possible reasons:"
-            echo "1. Custom properties are only available for GitHub Enterprise Cloud or Enterprise Server"
-            echo "2. Your organization might not have this feature enabled"
-            echo "3. The token might lack required permissions (admin:org)"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "API Response:"
+            echo "$API_RESPONSE"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             echo ""
-            echo "To check your organization's features:"
-            echo "  gh api /orgs/$ORG_NAME | jq '.plan'"
+            
+            if echo "$API_RESPONSE" | grep -qi "404\|not found"; then
+              echo "🚫 HTTP 404 - Feature Not Available"
+              echo ""
+              echo "Your organization '$ORG_NAME' does not have access to custom properties."
+              echo ""
+              echo "This is a GitHub plan limitation, not a workflow bug."
+              echo ""
+            elif echo "$API_RESPONSE" | grep -qi "403\|forbidden"; then
+              echo "🔒 HTTP 403 - Permission Denied"
+              echo ""
+              echo "The GITHUB_TOKEN lacks required permissions."
+              echo "Required scope: admin:org"
+              echo ""
+            fi
+            
+            echo "SOLUTIONS:"
             echo ""
-            echo "GitHub.com Free/Team/Pro plans do not support custom properties."
-            echo "You need GitHub Enterprise Cloud or Enterprise Server."
+            echo "1️⃣  Test on GitHub Enterprise Server (RECOMMENDED):"
+            echo "   Host: github.gwd.broadcom.net"
+            echo "   Org: TNZ"
+            echo "   This environment HAS custom properties ✅"
+            echo ""
+            echo "2️⃣  Use GitHub Topics instead (for github.com):"
+            echo "   gh api -X PUT /repos/$ORG_NAME/REPO/topics \\"
+            echo "     --input - <<<'{\"names\": [\"project-tis\", \"team-eng\"]}'"
+            echo ""
+            echo "3️⃣  Upgrade to GitHub Enterprise Cloud:"
+            echo "   Contact GitHub Sales"
+            echo ""
+            echo "For more information:"
+            echo "  📄 See GITHUB-COMPATIBILITY.md in this repository"
+            echo ""
+            
             exit 1
           fi
           
@@ -233,6 +319,8 @@ jobs:
           
           if [[ "${{ github.event.inputs.dry_run }}" == "false" ]]; then
             echo "Creating property..."
+            echo "API Endpoint: POST /orgs/$ORG_NAME/properties/schema"
+            echo ""
             
             # Capture both stdout and stderr
             RESPONSE=$(echo "$PROPERTY_JSON" | gh api -X POST /orgs/$ORG_NAME/properties/schema --input - 2>&1)
@@ -244,24 +332,80 @@ jobs:
               echo "Created property:"
               echo "$RESPONSE" | jq '.'
             else
-              echo "::error::Failed to create property"
+              echo "::error::❌ Failed to create property '$PROPERTY_NAME'"
               echo ""
-              echo "Error response:"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+              echo "ERROR DETAILS:"
+              echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
               echo "$RESPONSE"
               echo ""
               
               # Check for specific errors
-              if echo "$RESPONSE" | grep -q "404"; then
-                echo "::error::HTTP 404 - Custom properties API not found"
-                echo "This organization does not have access to custom properties."
-                echo "Custom properties require GitHub Enterprise Cloud or Enterprise Server."
-              elif echo "$RESPONSE" | grep -q "403"; then
-                echo "::error::HTTP 403 - Permission denied"
-                echo "The token lacks required permissions. Need: admin:org scope"
-              elif echo "$RESPONSE" | grep -q "422"; then
-                echo "::error::HTTP 422 - Validation error"
-                echo "Check the property configuration for invalid values"
+              if echo "$RESPONSE" | grep -qi "404\|not found"; then
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo "🚫 HTTP 404 - CUSTOM PROPERTIES NOT AVAILABLE"
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo ""
+                echo "Your organization '$ORG_NAME' does not have access to custom properties."
+                echo ""
+                echo "Custom properties are ONLY available on:"
+                echo "  ✅ GitHub Enterprise Cloud"
+                echo "  ✅ GitHub Enterprise Server 3.14+"
+                echo ""
+                echo "NOT available on:"
+                echo "  ❌ GitHub Free"
+                echo "  ❌ GitHub Team"
+                echo "  ❌ GitHub Pro"
+                echo ""
+                echo "To check your organization's plan:"
+                echo "  gh api /orgs/$ORG_NAME | jq '.plan.name'"
+                echo ""
+                echo "SOLUTION:"
+                echo "  1. Test this workflow on your GitHub Enterprise Server instead:"
+                echo "     Host: github.gwd.broadcom.net"
+                echo "     Org: TNZ"
+                echo ""
+                echo "  2. OR use GitHub Topics as an alternative on github.com:"
+                echo "     See: GITHUB-COMPATIBILITY.md"
+                echo ""
+              elif echo "$RESPONSE" | grep -qi "403\|forbidden"; then
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo "🔒 HTTP 403 - PERMISSION DENIED"
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo ""
+                echo "The token lacks required permissions."
+                echo ""
+                echo "Required scope: admin:org"
+                echo ""
+                echo "To fix:"
+                echo "  1. Create a Personal Access Token with 'admin:org' scope"
+                echo "  2. Add it to repository secrets as 'ORG_ADMIN_TOKEN'"
+                echo "  3. Update workflow to use it"
+                echo ""
+              elif echo "$RESPONSE" | grep -qi "422\|unprocessable"; then
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo "⚠️  HTTP 422 - VALIDATION ERROR"
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo ""
+                echo "The property configuration has invalid values."
+                echo ""
+                echo "Check:"
+                echo "  - Property name format (lowercase, hyphens only)"
+                echo "  - Required fields are provided"
+                echo "  - Values are valid for the property type"
+                echo ""
+              else
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo "❓ UNKNOWN ERROR"
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo ""
+                echo "See error details above."
+                echo ""
               fi
+              
+              echo "For more information, see:"
+              echo "  📄 GITHUB-COMPATIBILITY.md"
+              echo ""
               
               exit 1
             fi
