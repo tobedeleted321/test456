@@ -319,11 +319,11 @@ jobs:
           
           if [[ "${{ github.event.inputs.dry_run }}" == "false" ]]; then
             echo "Creating property..."
-            echo "API Endpoint: POST /orgs/$ORG_NAME/properties/schema"
+            echo "API Endpoint: POST /orgs/$ORG_NAME/properties/schema/$name"
             echo ""
             
             # Capture both stdout and stderr
-            RESPONSE=$(echo "$PROPERTY_JSON" | gh api -X POST /orgs/$ORG_NAME/properties/schema --input - 2>&1)
+            RESPONSE=$(echo "$PROPERTY_JSON" | gh api -X PUT /orgs/$ORG_NAME/properties/schema/$name --input - 2>&1)
             EXIT_CODE=$?
             
             if [[ $EXIT_CODE -eq 0 ]]; then
