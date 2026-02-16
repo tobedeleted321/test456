@@ -96,8 +96,8 @@ jobs:
       - name: Commit updated custom_props.json
         run: |
           # Configure git
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "charugarg2810"
+          git config user.email "charugarg.eic@gmail.com"
           
           # Check if there are changes
           if git diff --quiet custom_props.json; then
