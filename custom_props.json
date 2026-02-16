@@ -8,6 +8,12 @@
     "values_editable_by": "org_and_repo_actors"
   },
   {
+    "property_name": "testprop",
+    "value_type": "string",
+    "required": false,
+    "values_editable_by": "org_and_repo_actors"
+  },
+  {
     "property_name": "team",
     "value_type": "single_select",
     "required": true,
@@ -19,7 +25,8 @@
       "Developer",
       "PE",
       "SRE",
-      "UI"
+      "UI",
+      "ABC"
     ],
     "values_editable_by": "org_and_repo_actors"
   }
