@@ -3,11 +3,30 @@ name: Manage Custom Property Values JSON
 on:
   workflow_dispatch:
     inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options:
+          - backup_and_sync
+          - delete_property
+        default: backup_and_sync
+      
       org_name:
         description: 'Github ORG name'
         required: true
         type: string
         default: tobedeleted321
+      
+      property_name:
+        description: 'Property name to delete (only for delete_property action)'
+        required: false
+        type: string
+      
+      confirm_delete:
+        description: 'Type "DELETE" to confirm deletion (required for delete_property action)'
+        required: false
+        type: string
 
 jobs:
   get-property-json:
@@ -26,14 +45,113 @@ jobs:
           GITHUB_OWNER: tobedeleted321
         run: |
           echo "${{ secrets.TOKEN }}" | gh auth login --with-token
+          echo "✅ GitHub CLI authenticated"
+      
+      - name: Validate inputs
+        if: github.event.inputs.action == 'delete_property'
+        env:
+          ACTION: ${{ github.event.inputs.action }}
+          PROPERTY_NAME: ${{ github.event.inputs.property_name }}
+          CONFIRM_DELETE: ${{ github.event.inputs.confirm_delete }}
+          ORG_NAME: ${{ github.event.inputs.org_name }}
+        run: |
+          echo "Action: ${ACTION}"
+          echo "Organization: ${ORG_NAME}"
+          echo "Property Name: ${PROPERTY_NAME}"
+          echo ""
+          
+          # Validate property name is provided
+          if [ -z "${PROPERTY_NAME}" ]; then
+            echo "❌ Error: Property name is required for delete_property action"
+            exit 1
+          fi
+          
+          # Validate delete confirmation
+          if [ "${CONFIRM_DELETE}" != "DELETE" ]; then
+            echo "❌ Error: Delete action requires confirmation"
+            echo "   Please type 'DELETE' in the confirm_delete field"
+            exit 1
+          fi
+          
+          # Check if property exists
+          echo "Checking if property '${PROPERTY_NAME}' exists..."
+          if ! gh api "/orgs/${ORG_NAME}/properties/schema" --jq ".[] | select(.property_name == \"${PROPERTY_NAME}\") | .property_name" 2>/dev/null | grep -q "${PROPERTY_NAME}"; then
+            echo "❌ Error: Property '${PROPERTY_NAME}' does not exist in organization '${ORG_NAME}'"
+            exit 1
+          fi
+          echo "✅ Property exists"
+          
+          # Check if property is in use
+          echo ""
+          echo "Checking if property is in use by repositories..."
+          REPOS_USING_PROPERTY=$(gh api "/orgs/${ORG_NAME}/properties/values" --jq ".[] | select(.properties.${PROPERTY_NAME} != null) | .repository_name" 2>/dev/null || echo "")
+          
+          if [ -n "${REPOS_USING_PROPERTY}" ]; then
+            REPO_COUNT=$(echo "${REPOS_USING_PROPERTY}" | wc -l | tr -d ' ')
+            echo "⚠️  WARNING: Property is currently used by ${REPO_COUNT} repository/repositories:"
+            echo "${REPOS_USING_PROPERTY}" | sed 's/^/  - /'
+            echo ""
+            echo "Deleting this property will remove it from all repositories!"
+          else
+            echo "✅ Property is not in use by any repositories"
+          fi
+          
+          echo ""
+          echo "✅ Input validation passed"
+      
+      - name: Delete property
+        if: github.event.inputs.action == 'delete_property'
+        env:
+          ORG_NAME: ${{ github.event.inputs.org_name }}
+          PROPERTY_NAME: ${{ github.event.inputs.property_name }}
+        run: |
+          echo "================================================"
+          echo "DELETING CUSTOM PROPERTY"
+          echo "================================================"
+          echo "Organization: ${ORG_NAME}"
+          echo "Property Name: ${PROPERTY_NAME}"
+          echo ""
+          
+          # Get property details before deletion
+          echo "Current property configuration:"
+          gh api "/orgs/${ORG_NAME}/properties/schema" --jq ".[] | select(.property_name == \"${PROPERTY_NAME}\")" | jq '.'
+          echo ""
+          
+          # Delete the property
+          echo "Deleting property..."
+          if gh api \
+            --method DELETE \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "/orgs/${ORG_NAME}/properties/schema/${PROPERTY_NAME}" \
+            --silent; then
+            echo "✅ Property '${PROPERTY_NAME}' deleted successfully"
+          else
+            echo "❌ Failed to delete property"
+            exit 1
+          fi
+          
+          echo ""
+          echo "Verifying deletion..."
+          if gh api "/orgs/${ORG_NAME}/properties/schema" --jq ".[] | select(.property_name == \"${PROPERTY_NAME}\") | .property_name" 2>/dev/null | grep -q "${PROPERTY_NAME}"; then
+            echo "❌ Property still exists after deletion"
+            exit 1
+          else
+            echo "✅ Property successfully removed from schema"
+          fi
       
       - name: Create custom properties backup
         env:
           ORG: ${{ github.event.inputs.org_name }}
+          ACTION: ${{ github.event.inputs.action }}
         run: |
           NAME="${ORG}_custom_props_backup.json"
           
-          echo "Creating backup for organization: ${ORG}"
+          if [ "${ACTION}" == "delete_property" ]; then
+            echo "Creating backup before deletion for organization: ${ORG}"
+          else
+            echo "Creating backup for organization: ${ORG}"
+          fi
           echo "Backup file: ${NAME}"
           echo ""
           
@@ -55,7 +173,7 @@ jobs:
       - name: Upload backup artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.inputs.org_name }}_custom_props_backup
+          name: ${{ github.event.inputs.org_name }}_custom_props_backup_${{ github.event.inputs.action == 'delete_property' && format('before_delete_{0}', github.event.inputs.property_name) || 'sync' }}
           path: ${{ github.event.inputs.org_name }}_custom_props_backup.json
           retention-days: 90
           if-no-files-found: error
@@ -67,16 +185,22 @@ jobs:
       #     config-file: ./custom_props.json
       #     organization: ${{ github.event.inputs.org_name }}
       - name: Update custom properties
+        if: github.event.inputs.action == 'backup_and_sync'
         run:
           gh api -X PATCH /orgs/${{ github.event.inputs.org_name }}/properties/schema --input ./custom_props.json --silent
 
       - name: Update custom propertis json metadata
         env:
           ORG: ${{ github.event.inputs.org_name }}
+          ACTION: ${{ github.event.inputs.action }}
         run: |
           NAME="custom_props.json"
           
-          echo "Fetching updated custom properties for organization: ${ORG}"
+          if [ "${ACTION}" == "delete_property" ]; then
+            echo "Fetching updated custom properties after deletion for organization: ${ORG}"
+          else
+            echo "Fetching updated custom properties for organization: ${ORG}"
+          fi
           
           # Write the schema to a file
           echo "{" > "${NAME}"
@@ -99,6 +223,8 @@ jobs:
       - name: Commit updated custom_props.json
         env:
           GITHUB_TOKEN: ${{ secrets.TOKEN }}
+          ACTION: ${{ github.event.inputs.action }}
+          PROPERTY_NAME: ${{ github.event.inputs.property_name }}
         run: |
           # Configure git
           git config user.name "charugarg2810"
@@ -114,9 +240,13 @@ jobs:
             git diff custom_props.json
             echo ""
             
-            # Add and commit
+            # Add and commit with action-specific message
             git add custom_props.json
-            git commit -m "Update custom_props.json from ${{ github.event.inputs.org_name }} org - Run ${{ github.run_number }} by ${{ github.actor }}"
+            if [ "${ACTION}" == "delete_property" ]; then
+              git commit -m "Delete custom property '${PROPERTY_NAME}' from ${{ github.event.inputs.org_name }} - Run ${{ github.run_number }} by ${{ github.actor }}"
+            else
+              git commit -m "Update custom_props.json from ${{ github.event.inputs.org_name }} org - Run ${{ github.run_number }} by ${{ github.actor }}"
+            fi
             
             # Push changes (token is already configured from checkout)
             git push
@@ -124,3 +254,39 @@ jobs:
             echo ""
             echo "✅ Successfully committed and pushed custom_props.json"
           fi
+      
+      - name: Create summary
+        if: always()
+        env:
+          ACTION: ${{ github.event.inputs.action }}
+          ORG_NAME: ${{ github.event.inputs.org_name }}
+          PROPERTY_NAME: ${{ github.event.inputs.property_name }}
+        run: |
+          echo "## Custom Properties Management" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${ACTION}" == "delete_property" ]; then
+            echo "### ✅ Property Deleted" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- **Organization:** \`${ORG_NAME}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- **Property Name:** \`${PROPERTY_NAME}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- **Action:** Delete" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✅ **Backup created before deletion**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "The property has been removed from the organization schema." >> $GITHUB_STEP_SUMMARY
+            echo "All repositories using this property have had it removed." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ✅ Backup & Sync Complete" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "- **Organization:** \`${ORG_NAME}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- **Action:** Backup and Sync" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Custom properties have been backed up and \`custom_props.json\` has been updated." >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Workflow Run:** #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Triggered by:** @${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
