@@ -17,6 +17,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.TOKEN }}
+          persist-credentials: true
       
       - name: Setup GitHub CLI
         env:
@@ -94,6 +97,8 @@ jobs:
           cat "${NAME}"
       
       - name: Commit updated custom_props.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.TOKEN }}
         run: |
           # Configure git
           git config user.name "charugarg2810"
@@ -112,6 +117,8 @@ jobs:
             # Add and commit
             git add custom_props.json
             git commit -m "Update custom_props.json from ${{ github.event.inputs.org_name }} org - Run ${{ github.run_number }} by ${{ github.actor }}"
+            
+            # Push changes (token is already configured from checkout)
             git push
             
             echo ""
