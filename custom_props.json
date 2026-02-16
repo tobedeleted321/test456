@@ -10,8 +10,7 @@
   {
     "property_name": "team",
     "value_type": "single_select",
-    "required": true,
-    "default_value": "SRE",
+    "required": false,
     "description": "Project/product identifier",
     "allowed_values": [
       "Backend",
