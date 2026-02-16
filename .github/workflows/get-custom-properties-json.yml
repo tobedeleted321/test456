@@ -57,9 +57,12 @@ jobs:
           retention-days: 90
           if-no-files-found: error
       
-      - name: Configure custom properties
-        uses: pandaswhocode/configure-custom-properties@v1.0.5
-        with:
-          token: ${{ secrets.TOKEN }}
-          config-file: ./custom_props.json
-          organization: ${{ github.event.inputs.org_name }}
+      # - name: Configure custom properties
+      #   uses: pandaswhocode/configure-custom-properties@v1
+      #   with:
+      #     token: ${{ secrets.TOKEN }}
+      #     config-file: ./custom_props.json
+      #     organization: ${{ github.event.inputs.org_name }}
+      - name: Update custom properties
+        run:
+          gh api -X PATCH /orgs/${{ github.event.inputs.org_name }}/properties/schema --input ./custom_props.json --silent
