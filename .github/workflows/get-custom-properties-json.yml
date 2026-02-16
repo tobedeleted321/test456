@@ -66,3 +66,54 @@ jobs:
       - name: Update custom properties
         run:
           gh api -X PATCH /orgs/${{ github.event.inputs.org_name }}/properties/schema --input ./custom_props.json --silent
+
+      - name: Update custom propertis json metadata
+        env:
+          ORG: ${{ github.event.inputs.org_name }}
+        run: |
+          NAME="custom_props.json"
+          
+          echo "Fetching updated custom properties for organization: ${ORG}"
+          
+          # Write the schema to a file
+          echo "{" > "${NAME}"
+          echo "  \"properties\":" >> "${NAME}"
+          gh api /orgs/"${ORG}"/properties/schema | jq -r 'del(.[]|.["url","source_type"])' >> "${NAME}"
+          echo "}" >> "${NAME}"
+          
+          echo ""
+          echo "Updated custom_props.json with latest property schema"
+          
+          # Show property count
+          PROP_COUNT=$(jq '.properties | length' "${NAME}")
+          echo "Total properties: ${PROP_COUNT}"
+          
+          # Display updated contents
+          echo ""
+          echo "Updated contents:"
+          cat "${NAME}"
+      
+      - name: Commit updated custom_props.json
+        run: |
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Check if there are changes
+          if git diff --quiet custom_props.json; then
+            echo "No changes to custom_props.json - skipping commit"
+          else
+            echo "Changes detected in custom_props.json"
+            echo ""
+            echo "Diff:"
+            git diff custom_props.json
+            echo ""
+            
+            # Add and commit
+            git add custom_props.json
+            git commit -m "Update custom_props.json from ${{ github.event.inputs.org_name }} org - Run ${{ github.run_number }} by ${{ github.actor }}"
+            git push
+            
+            echo ""
+            echo "✅ Successfully committed and pushed custom_props.json"
+          fi
