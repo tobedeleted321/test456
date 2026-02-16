@@ -1,4 +1,4 @@
-name: Manage Custom Property Values
+name: Get Custom Property Values JSON
 
 on:
   workflow_dispatch:
