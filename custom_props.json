@@ -23,7 +23,7 @@
       "Design"
     ],
     "values_editable_by": "org_and_repo_actors"
-  }
+  },
   {
     "property_name": "team",
     "value_type": "single_select",
