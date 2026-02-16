@@ -23,23 +23,6 @@
       "Design"
     ],
     "values_editable_by": "org_and_repo_actors"
-  },
-  {
-    "property_name": "team_dummy",
-    "value_type": "single_select",
-    "required": true,
-    "default_value": "SRE",
-    "description": "Project/product identifier",
-    "allowed_values": [
-      "Backend",
-      "Developer",
-      "PE",
-      "SRE",
-      "UI",
-      "ABC",
-      "Design"
-    ],
-    "values_editable_by": "org_and_repo_actors"
   }
 ]
 }
