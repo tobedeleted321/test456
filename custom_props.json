@@ -23,12 +23,6 @@
       "Design"
     ],
     "values_editable_by": "org_and_repo_actors"
-  },
-  {
-    "property_name": "testprop",
-    "value_type": "string",
-    "required": false,
-    "values_editable_by": "org_and_repo_actors"
   }
 ]
 }
