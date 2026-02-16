@@ -1,4 +1,4 @@
-name: Get Custom Property Values JSON
+name: Manage Custom Property Values JSON
 
 on:
   workflow_dispatch:
@@ -24,15 +24,42 @@ jobs:
         run: |
           echo "${{ secrets.TOKEN }}" | gh auth login --with-token
       
-      - name: Validate inputs
+      - name: Create custom properties backup
         env:
           ORG: ${{ github.event.inputs.org_name }}
         run: |
-          NAME="custom_props.json"
-
+          NAME="${ORG}_custom_props_backup.json"
+          
+          echo "Creating backup for organization: ${ORG}"
+          echo "Backup file: ${NAME}"
+          echo ""
+          
           # Write the schema to a file
           echo "{" > "${NAME}"
           echo "  \"properties\":" >> "${NAME}"
           gh api /orgs/"${ORG}"/properties/schema | jq -r 'del(.[]|.["url","source_type"])' >> "${NAME}"
           echo "}" >> "${NAME}"
-          cat custom_props.json
+          
+          # Display backup contents
+          echo "Backup contents:"
+          cat "${NAME}"
+          
+          # Show property count
+          PROP_COUNT=$(jq '.properties | length' "${NAME}")
+          echo ""
+          echo "Total properties backed up: ${PROP_COUNT}"
+      
+      - name: Upload backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.org_name }}_custom_props_backup
+          path: ${{ github.event.inputs.org_name }}_custom_props_backup.json
+          retention-days: 90
+          if-no-files-found: error
+      
+      - name: Configure custom properties
+        uses: pandaswhocode/configure-custom-properties@v1
+        with:
+          token: ${{ secrets.TOKEN }}
+          config-file: ./custom_props.json
+          organization: ${{ github.event.inputs.org_name }}
