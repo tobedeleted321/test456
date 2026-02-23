@@ -5,7 +5,8 @@
     "property_name": "project",
     "value_type": "string",
     "required": false,
-    "values_editable_by": "org_and_repo_actors"
+    "values_editable_by": "org_and_repo_actors",
+    "require_explicit_values": false
   },
   {
     "property_name": "team",
@@ -21,7 +22,8 @@
       "ABC",
       "Design"
     ],
-    "values_editable_by": "org_and_repo_actors"
+    "values_editable_by": "org_and_repo_actors",
+    "require_explicit_values": false
   }
 ]
 }
