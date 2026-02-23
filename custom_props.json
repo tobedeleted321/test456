@@ -2,23 +2,6 @@
   "properties":
 [
   {
-    "property_name": "dummy",
-    "value_type": "single_select",
-    "required": false,
-    "description": "Project/product identifier",
-    "allowed_values": [
-      "Backend",
-      "Developer",
-      "PE",
-      "SRE",
-      "UI",
-      "XYZ",
-      "Design"
-    ],
-    "values_editable_by": "org_and_repo_actors",
-    "require_explicit_values": false
-  },
-  {
     "property_name": "project",
     "value_type": "string",
     "required": false,
