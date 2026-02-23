@@ -43,9 +43,43 @@ jobs:
       - name: Setup GitHub CLI
         env:
           GITHUB_OWNER: tobedeleted321
+          GH_TOKEN: ${{ secrets.TOKEN }}
         run: |
           echo "${{ secrets.TOKEN }}" | gh auth login --with-token
           echo "✅ GitHub CLI authenticated"
+          
+          # Verify authentication
+          echo ""
+          echo "Testing authentication..."
+          if gh auth status; then
+            echo "✅ Authentication successful"
+          else
+            echo "❌ Authentication failed"
+            exit 1
+          fi
+          
+          # Test organization access
+          echo ""
+          echo "Testing organization access..."
+          if gh api /orgs/${GITHUB_OWNER} --jq '.login' > /dev/null 2>&1; then
+            echo "✅ Organization access confirmed"
+          else
+            echo "❌ Cannot access organization"
+            echo "This might be a token permissions issue"
+            exit 1
+          fi
+          
+          # Test custom properties access
+          echo ""
+          echo "Testing custom properties API access..."
+          if gh api /orgs/${GITHUB_OWNER}/properties/schema > /dev/null 2>&1; then
+            echo "✅ Custom properties API access confirmed"
+          else
+            echo "❌ Cannot access custom properties API"
+            echo "Error details:"
+            gh api /orgs/${GITHUB_OWNER}/properties/schema 2>&1 || true
+            exit 1
+          fi
       
       - name: Validate inputs
         if: github.event.inputs.action == 'delete_property'
@@ -54,6 +88,7 @@ jobs:
           PROPERTY_NAME: ${{ github.event.inputs.property_name }}
           CONFIRM_DELETE: ${{ github.event.inputs.confirm_delete }}
           ORG_NAME: ${{ github.event.inputs.org_name }}
+          GH_TOKEN: ${{ secrets.TOKEN }}
         run: |
           echo "Action: ${ACTION}"
           echo "Organization: ${ORG_NAME}"
@@ -103,6 +138,7 @@ jobs:
         env:
           ORG: ${{ github.event.inputs.org_name }}
           ACTION: ${{ github.event.inputs.action }}
+          GH_TOKEN: ${{ secrets.TOKEN }}
         run: |
           NAME="${ORG}_custom_props_backup.json"
           
@@ -142,6 +178,7 @@ jobs:
         env:
           ORG_NAME: ${{ github.event.inputs.org_name }}
           PROPERTY_NAME: ${{ github.event.inputs.property_name }}
+          GH_TOKEN: ${{ secrets.TOKEN }}
         run: |
           echo "================================================"
           echo "DELETING CUSTOM PROPERTY"
@@ -186,6 +223,8 @@ jobs:
       #     organization: ${{ github.event.inputs.org_name }}
       - name: Update custom properties
         if: github.event.inputs.action == 'backup_and_sync'
+        env:
+          GH_TOKEN: ${{ secrets.TOKEN }}
         run:
           gh api -X PATCH /orgs/${{ github.event.inputs.org_name }}/properties/schema --input ./custom_props.json --silent
 
@@ -193,6 +232,7 @@ jobs:
         env:
           ORG: ${{ github.event.inputs.org_name }}
           ACTION: ${{ github.event.inputs.action }}
+          GH_TOKEN: ${{ secrets.TOKEN }}
         run: |
           NAME="custom_props.json"
           
