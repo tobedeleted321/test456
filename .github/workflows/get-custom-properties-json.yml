@@ -45,8 +45,8 @@ jobs:
           GITHUB_OWNER: tobedeleted321
           GH_TOKEN: ${{ secrets.TOKEN }}
         run: |
-          echo "${{ secrets.TOKEN }}" | gh auth login --with-token
-          echo "✅ GitHub CLI authenticated"
+          echo "Using GH_TOKEN for authentication"
+          echo "✅ GitHub CLI configured"
           
           # Verify authentication
           echo ""
