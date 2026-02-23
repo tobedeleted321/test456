@@ -9,13 +9,6 @@
     "require_explicit_values": false
   },
   {
-    "property_name": "testprop",
-    "value_type": "string",
-    "required": false,
-    "values_editable_by": "org_and_repo_actors",
-    "require_explicit_values": false
-  },
-  {
     "property_name": "team",
     "value_type": "single_select",
     "required": false,
@@ -30,6 +23,13 @@
       "ABC",
       "Design"
     ],
+    "values_editable_by": "org_and_repo_actors",
+    "require_explicit_values": false
+  },
+  {
+    "property_name": "testprop",
+    "value_type": "string",
+    "required": false,
     "values_editable_by": "org_and_repo_actors",
     "require_explicit_values": false
   }
